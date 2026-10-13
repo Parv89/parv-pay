@@ -3,19 +3,20 @@ import {
   X, Camera, CameraOff, Upload, Zap, Store, 
   Coffee, ShoppingBag, ArrowRight, AlertCircle, 
   CheckCircle2, RefreshCw, KeyRound, ShieldAlert,
-  UserCheck
+  UserCheck, Lock, Globe, StopCircle
 } from 'lucide-react';
 import jsQR from 'jsqr';
 import { parseAndValidateDemoQr } from '../utils/qrPayload';
 
 export const ScanQrModal = ({ onClose, onScannedTarget }) => {
-  // Camera state: 'initializing' | 'active' | 'denied' | 'unavailable'
-  const [cameraStatus, setCameraStatus] = useState('initializing');
+  // Camera states: 'idle' | 'requesting' | 'active' | 'denied' | 'insecure_context' | 'unavailable' | 'busy' | 'stopped'
+  const [cameraStatus, setCameraStatus] = useState('requesting');
   const [errorMessage, setErrorMessage] = useState('');
+  const [errorDetails, setErrorDetails] = useState('');
   const [scanValidationBanner, setScanValidationBanner] = useState(null);
   const [activeTab, setActiveTab] = useState('camera'); // 'camera' | 'manual'
 
-  // Manual Demo ID form
+  // Manual Demo ID form state
   const [manualName, setManualName] = useState('');
   const [manualId, setManualId] = useState('');
   const [manualAmount, setManualAmount] = useState('');
@@ -25,9 +26,9 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
   const scanCanvasRef = useRef(null);
   const animationFrameRef = useRef(null);
   const fileInputRef = useRef(null);
-  const isScanningRef = useRef(true);
+  const isScanningRef = useRef(false);
 
-  // Quick simulation demo targets
+  // Quick simulation demo targets (allows instant 1-tap testing on any device)
   const demoQrs = [
     { name: 'Sharma General Store', upiId: 'sharma.store@okupi', amount: 180, icon: Store, note: 'Daily Essentials' },
     { name: 'Chai & Samosa Corner', upiId: 'chaicorner@paytm', amount: 45, icon: Coffee, note: 'Evening Snacks' },
@@ -35,54 +36,161 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
     { name: 'Priya Verma', upiId: 'priya.verma@axisbank', amount: 350, icon: UserCheck, note: 'Weekend Split' },
   ];
 
-  // Stop camera tracks helper
+  // Stop every single track on the media stream and clear video ref
   const stopCameraStream = () => {
+    isScanningRef.current = false;
+
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
+
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
+      try {
+        const tracks = streamRef.current.getTracks();
+        tracks.forEach((track) => {
+          track.stop();
+        });
+      } catch (e) {
+        console.warn('Error stopping camera tracks:', e);
+      }
       streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
     }
   };
 
-  // Start phone camera with permission handling
+  // Check if current context is secure (HTTPS or localhost)
+  const checkSecureContext = () => {
+    const isLocalhost = 
+      window.location.hostname === 'localhost' || 
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === '[::1]';
+
+    return window.isSecureContext || isLocalhost;
+  };
+
+  // Start rear/environment camera with permission handling
   const startCamera = async () => {
     stopCameraStream();
     setErrorMessage('');
+    setErrorDetails('');
     setScanValidationBanner(null);
-    setCameraStatus('initializing');
+    setCameraStatus('requesting');
     isScanningRef.current = true;
 
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setCameraStatus('unavailable');
-      setErrorMessage('Camera access is not supported by this browser. You can upload a QR image or enter a Demo ID manually.');
+    // 1. Verify HTTPS / secure context requirement
+    const isSecure = checkSecureContext();
+    if (!isSecure) {
+      setCameraStatus('insecure_context');
+      setErrorMessage('Camera access requires a secure HTTPS connection.');
+      setErrorDetails(
+        `Mobile browsers (Chrome & Safari) strictly block camera APIs over insecure HTTP (${window.location.protocol}//${window.location.host}). Please load via HTTPS (e.g. on Vercel or https://... with Vite SSL) or test using the Image Upload button below.`
+      );
+      isScanningRef.current = false;
       return;
     }
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 640 } },
-      });
-      streamRef.current = stream;
+    // 2. Check navigator.mediaDevices and getUserMedia availability
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      setCameraStatus('unavailable');
+      setErrorMessage('Camera API is not supported by this browser.');
+      setErrorDetails('Your mobile browser or WebView does not expose navigator.mediaDevices.getUserMedia. Please update your browser or use image upload.');
+      isScanningRef.current = false;
+      return;
+    }
 
-      if (videoRef.current) {
+    // 3. Request rear/environment camera with fallback
+    let stream = null;
+    try {
+      // Primary attempt: rear/environment camera with ideal facingMode
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+    } catch (primaryErr) {
+      console.warn('Primary environment camera constraint failed, attempting generic video fallback:', primaryErr);
+      try {
+        // Secondary attempt: fallback to any available video camera
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      } catch (fallbackErr) {
+        handleCameraError(fallbackErr);
+        isScanningRef.current = false;
+        return;
+      }
+    }
+
+    if (!stream) {
+      setCameraStatus('unavailable');
+      setErrorMessage('Could not establish camera video stream.');
+      isScanningRef.current = false;
+      return;
+    }
+
+    // 4. Attach stream to video element
+    streamRef.current = stream;
+
+    if (videoRef.current) {
+      try {
         videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute('playsinline', 'true'); // Critical for iOS Safari & Android
+        videoRef.current.setAttribute('playsinline', 'true'); // Critical for iOS Safari and mobile Chrome
+        videoRef.current.muted = true; // Required by mobile autoplay policies
+
+        // Wait until video metadata is loaded before starting scan loop
         await videoRef.current.play();
         setCameraStatus('active');
-        requestAnimationFrame(tickScan);
-      }
-    } catch (err) {
-      console.warn('Camera access failed:', err);
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setCameraStatus('denied');
-        setErrorMessage('Camera permission was denied. Please allow camera access in browser settings, or upload a QR image below.');
-      } else {
+        animationFrameRef.current = requestAnimationFrame(tickScan);
+      } catch (playErr) {
+        console.error('Error playing camera video stream:', playErr);
         setCameraStatus('unavailable');
-        setErrorMessage('No camera found or camera is currently busy. You can upload a QR image or enter a Demo ID manually.');
+        setErrorMessage('Failed to start video playback. Tap Retry Camera below.');
+        isScanningRef.current = false;
       }
+    } else {
+      // If video element wasn't ready yet, set active and it will link in useEffect
+      setCameraStatus('active');
+    }
+  };
+
+  // Map specific camera error codes to helpful user-facing explanations
+  const handleCameraError = (err) => {
+    console.error('Camera getUserMedia error:', err);
+    const errName = err.name || '';
+
+    if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError') {
+      setCameraStatus('denied');
+      setErrorMessage('Camera permission was denied.');
+      setErrorDetails('Please tap the permissions/lock icon in your mobile browser address bar to allow Camera access for this site, then tap "Retry Camera".');
+    } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError') {
+      setCameraStatus('unavailable');
+      setErrorMessage('No camera hardware found on this device.');
+      setErrorDetails('No video input device was detected. You can upload a QR image from your gallery or enter a Demo ID manually.');
+    } else if (errName === 'NotReadableError' || errName === 'TrackStartError') {
+      setCameraStatus('busy');
+      setErrorMessage('Camera is currently in use by another application.');
+      setErrorDetails('Another app or browser tab is locking the camera hardware. Please close other camera apps and retry.');
+    } else if (errName === 'OverconstrainedError') {
+      setCameraStatus('unavailable');
+      setErrorMessage('Requested camera configuration could not be satisfied.');
+      setErrorDetails('Your device camera could not satisfy the resolution requirements. Try switching cameras or uploading an image.');
+    } else if (errName === 'SecurityError') {
+      setCameraStatus('insecure_context');
+      setErrorMessage('Camera access blocked due to security restrictions.');
+      setErrorDetails('Mobile Chrome blocks camera access over unencrypted HTTP connections. Please access the site via HTTPS.');
+    } else {
+      setCameraStatus('unavailable');
+      setErrorMessage(err.message || 'Unable to access device camera.');
+      setErrorDetails('You can still test by uploading a QR image from your gallery or selecting a demo merchant below.');
     }
   };
 
@@ -91,7 +199,7 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
     if (!isScanningRef.current) return;
 
     const video = videoRef.current;
-    if (video && video.readyState === video.HAVE_ENOUGH_DATA) {
+    if (video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
       if (!scanCanvasRef.current) {
         scanCanvasRef.current = document.createElement('canvas');
       }
@@ -108,7 +216,7 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
 
       if (code && code.data) {
         handleRawDecodedData(code.data);
-        return; // Pause scanning while evaluating
+        return; // Pause scanning while evaluating result
       }
     }
 
@@ -123,12 +231,12 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
       isScanningRef.current = false;
       stopCameraStream();
 
-      // Haptic feedback if available
+      // Haptic vibration feedback on supported mobile devices
       try {
         navigator.vibrate?.(100);
       } catch (e) {}
 
-      // Pass recipient and proceed to simulated payment
+      // Pre-fill recipient and proceed through simulated payment flow
       onScannedTarget({
         name: validation.data.name,
         upiId: validation.data.upiId,
@@ -140,7 +248,7 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
     } else {
       // Rejection of invalid / unsupported / real UPI codes
       setScanValidationBanner(validation.error || 'Invalid or unrecognized QR code format.');
-      // Resume scanning after 2.5 seconds
+      // Resume scanning after 2.8 seconds
       setTimeout(() => {
         setScanValidationBanner(null);
         if (cameraStatus === 'active') {
@@ -150,7 +258,7 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
     }
   };
 
-  // Image Upload Scanner
+  // Image Upload Scanner (Fall-back for any device or when camera is unavailable)
   const handleImageFileChange = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -171,14 +279,14 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
         if (code && code.data) {
           handleRawDecodedData(code.data);
         } else {
-          setScanValidationBanner('No QR code detected in the selected image. Please try a clearer picture.');
-          setTimeout(() => setScanValidationBanner(null), 3000);
+          setScanValidationBanner('No QR code detected in the selected image. Please upload a clear QR code image.');
+          setTimeout(() => setScanValidationBanner(null), 3500);
         }
       };
       img.src = event.target.result;
     };
     reader.readAsDataURL(file);
-    e.target.value = ''; // Reset input
+    e.target.value = ''; // Reset input so same file can be re-selected
   };
 
   // Manual Demo ID Form Submit
@@ -190,6 +298,7 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
     }
 
     const trimmedId = manualId.trim() || `${manualName.toLowerCase().replace(/[^a-z0-9]/g, '')}@okparv`;
+    stopCameraStream();
     onScannedTarget({
       name: manualName.trim() || 'Demo Recipient',
       upiId: trimmedId,
@@ -206,7 +315,13 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
     onClose();
   };
 
-  // Lifecycle
+  // User taps Close / Stop Camera button
+  const handleCloseCameraAction = () => {
+    stopCameraStream();
+    onClose();
+  };
+
+  // Lifecycle: only start camera when modal is active and on the 'camera' tab
   useEffect(() => {
     if (activeTab === 'camera') {
       startCamera();
@@ -214,21 +329,27 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
       stopCameraStream();
     }
 
+    // Always stop every media track when unmounting or navigating away
     return () => {
       stopCameraStream();
     };
   }, [activeTab]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={handleCloseCameraAction}>
       <div className="scanner-sheet" onClick={(e) => e.stopPropagation()}>
         {/* Top Header */}
         <div className="scanner-header">
           <div className="scanner-title-box">
             <h3>Scan Parv Pay Demo QR</h3>
-            <span className="scanner-subtitle">Real-time Browser QR Scanner</span>
+            <span className="scanner-subtitle">Mobile Camera & File Scanner</span>
           </div>
-          <button className="icon-btn-close light" onClick={onClose} aria-label="Close scanner">
+          <button 
+            className="icon-btn-close light" 
+            onClick={handleCloseCameraAction} 
+            aria-label="Close scanner"
+            title="Close Camera"
+          >
             <X size={20} />
           </button>
         </div>
@@ -265,52 +386,86 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
         {/* CAMERA VIEW TAB */}
         {activeTab === 'camera' && (
           <>
-            {/* Viewfinder or Fallback */}
+            {/* Viewfinder Container: Video element is ALWAYS mounted to preserve ref */}
             <div className="viewfinder-container">
-              {cameraStatus === 'active' ? (
-                <div className="viewfinder-frame camera-active">
-                  <video ref={videoRef} className="camera-video-stream" />
-                  
-                  {/* Corner styling */}
-                  <div className="corner-bracket top-left"></div>
-                  <div className="corner-bracket top-right"></div>
-                  <div className="corner-bracket bottom-left"></div>
-                  <div className="corner-bracket bottom-right"></div>
+              <div className={`viewfinder-frame ${cameraStatus === 'active' ? 'camera-active' : 'camera-fallback'}`}>
+                {/* Live Video Element: always rendered so videoRef is never null */}
+                <video 
+                  ref={videoRef} 
+                  className="camera-video-stream"
+                  autoPlay
+                  playsInline
+                  muted
+                  style={{ display: cameraStatus === 'active' ? 'block' : 'none' }}
+                />
+                
+                {/* Camera Active Viewfinder Overlay */}
+                {cameraStatus === 'active' && (
+                  <>
+                    <div className="corner-bracket top-left"></div>
+                    <div className="corner-bracket top-right"></div>
+                    <div className="corner-bracket bottom-left"></div>
+                    <div className="corner-bracket bottom-right"></div>
 
-                  <div className="scanning-laser"></div>
+                    <div className="scanning-laser"></div>
 
-                  <div className="viewfinder-overlay-tag">
-                    <span>Align Parv Pay Demo QR</span>
+                    <div className="viewfinder-overlay-tag">
+                      <span>Align Parv Pay Demo QR in frame</span>
+                    </div>
+                  </>
+                )}
+
+                {/* Initializing State */}
+                {cameraStatus === 'requesting' && (
+                  <div className="camera-fallback-content">
+                    <RefreshCw size={36} className="camera-fallback-icon spinning" />
+                    <span className="fallback-title">Requesting Camera...</span>
+                    <p className="fallback-desc">Please grant camera permission when prompted by your mobile browser.</p>
                   </div>
-                </div>
-              ) : (
-                <div className="viewfinder-frame camera-fallback">
-                  <CameraOff size={38} className="camera-fallback-icon" />
-                  <span className="fallback-title">
-                    {cameraStatus === 'denied' ? 'Camera Permission Denied' : 'Camera Unavailable'}
-                  </span>
-                  <p className="fallback-desc">
-                    {errorMessage || 'Cannot access camera video stream.'}
-                  </p>
-                  
-                  <div className="fallback-actions">
-                    <button 
-                      className="btn-retry-camera" 
-                      onClick={startCamera}
-                    >
-                      <RefreshCw size={14} />
-                      <span>Retry Camera</span>
-                    </button>
-                    <button 
-                      className="btn-switch-upload"
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      <Upload size={14} />
-                      <span>Upload QR File</span>
-                    </button>
+                )}
+
+                {/* Insecure Context (HTTP) Explanation Alert */}
+                {cameraStatus === 'insecure_context' && (
+                  <div className="camera-fallback-content insecure">
+                    <Lock size={36} className="camera-fallback-icon text-amber" />
+                    <span className="fallback-title">HTTPS Connection Required</span>
+                    <p className="fallback-desc">
+                      Mobile Chrome strictly blocks camera access on unencrypted connections (<code>http://...</code>).
+                    </p>
+                    <div className="insecure-helper-box">
+                      <small>
+                        💡 <strong>How to fix:</strong> Access via <strong>HTTPS</strong> (e.g. <code>https://...</code> using Vite SSL or deployed on Vercel), or test immediately using <strong>Upload QR Image</strong> below!
+                      </small>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+
+                {/* Permission Denied or Unavailable State */}
+                {(cameraStatus === 'denied' || cameraStatus === 'unavailable' || cameraStatus === 'busy') && (
+                  <div className="camera-fallback-content">
+                    <CameraOff size={36} className="camera-fallback-icon" />
+                    <span className="fallback-title">{errorMessage}</span>
+                    <p className="fallback-desc">{errorDetails}</p>
+                    
+                    <div className="fallback-actions">
+                      <button 
+                        className="btn-retry-camera" 
+                        onClick={startCamera}
+                      >
+                        <RefreshCw size={14} />
+                        <span>Retry Camera</span>
+                      </button>
+                      <button 
+                        className="btn-switch-upload"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        <Upload size={14} />
+                        <span>Upload QR File</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Hidden File Input for Image Scanning */}
@@ -322,15 +477,26 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
               onChange={handleImageFileChange}
             />
 
-            {/* Quick Upload from Gallery Trigger */}
-            <div className="scanner-gallery-row">
+            {/* Gallery Upload & Visible Stop Camera Controls */}
+            <div className="scanner-quick-controls">
               <button 
                 className="btn-gallery-upload"
                 onClick={() => fileInputRef.current?.click()}
               >
                 <Upload size={16} />
-                <span>Upload QR Image from Device / Gallery</span>
+                <span>Upload QR Image from Phone Gallery</span>
               </button>
+
+              {cameraStatus === 'active' && (
+                <button 
+                  className="btn-stop-camera"
+                  onClick={stopCameraStream}
+                  title="Pause Camera"
+                >
+                  <StopCircle size={15} />
+                  <span>Pause Camera</span>
+                </button>
+              )}
             </div>
           </>
         )}
@@ -410,10 +576,13 @@ export const ScanQrModal = ({ onClose, onScannedTarget }) => {
           </div>
         </div>
 
-        {/* Bottom Close Button */}
+        {/* Bottom Actions: Visible Close Camera Button */}
         <div className="scanner-footer">
-          <button className="btn-cancel-scanner" onClick={onClose}>
-            Cancel
+          <button 
+            className="btn-cancel-scanner" 
+            onClick={handleCloseCameraAction}
+          >
+            Close Camera & Return
           </button>
         </div>
       </div>

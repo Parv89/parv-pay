@@ -110,12 +110,22 @@
    npm install
    ```
 
-3. Start the development server:
+3. Start the development server (with built-in HTTPS & Network exposure):
    ```bash
    npm run dev
    ```
 
-4. Open your browser at the local URL (usually `http://localhost:5173`).
+4. **Testing on a Mobile Phone**:
+   - Both your computer and your phone must be on the **same Wi-Fi network**.
+   - Vite will display a Network URL in your terminal, for example: `https://192.168.1.5:5173`.
+   - Open that **`https://`** URL in **Chrome** on your phone.
+   - When Chrome shows a certificate notice (due to the local development SSL certificate), tap **Advanced** -> **Proceed**.
+   - Tap **Scan QR** -> Grant camera permission when prompted.
+   - The rear camera will open instantly!
+
+> [!NOTE]
+> **Why HTTPS is Required for Mobile Cameras**:  
+> Web standards in mobile browsers (Chrome, Safari, Firefox) strictly restrict `navigator.mediaDevices.getUserMedia` to **Secure Contexts** (`https://` or `localhost`). If an app is opened over plain `http://192.168.x.x`, mobile browsers disable camera APIs for security. Parv Pay includes `@vitejs/plugin-basic-ssl` out-of-the-box so you can test real camera streaming on mobile phones without third-party tunnels!
 
 ---
 
