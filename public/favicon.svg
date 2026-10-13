@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="parvGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7B2CBF" />
+      <stop offset="50%" stop-color="#5A189A" />
+      <stop offset="100%" stop-color="#3C096C" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFD166" />
+      <stop offset="100%" stop-color="#FFB703" />
+    </linearGradient>
+  </defs>
+  <!-- Background Card -->
+  <rect width="100" height="100" rx="26" fill="url(#parvGrad)"/>
+  
+  <!-- Outer Glow Circle -->
+  <circle cx="50" cy="50" r="38" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2.5" />
+  
+  <!-- Stylized "P" with Rupee flourish -->
+  <!-- Left vertical pillar -->
+  <rect x="28" y="24" width="9" height="52" rx="4.5" fill="#FFFFFF"/>
+  
+  <!-- Top loop of P -->
+  <path d="M 32 24 H 56 C 68 24 74 33 74 42 C 74 51 68 60 56 60 H 32" 
+        fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+        
+  <!-- Rupee horizontal accent lines inside/across -->
+  <path d="M 40 37 H 64" stroke="url(#goldGrad)" stroke-width="4.5" stroke-linecap="round"/>
+  <path d="M 40 47 H 58" stroke="url(#goldGrad)" stroke-width="4.5" stroke-linecap="round"/>
+  
+  <!-- Dynamic swift dot / flash -->
+  <circle cx="68" cy="68" r="4.5" fill="url(#goldGrad)" />
+</svg>
